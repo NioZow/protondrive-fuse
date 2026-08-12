@@ -42,7 +42,7 @@ interface NewFileState {
 
 function statFor(node: NodeEntity): Fuse.Stats {
     const isFolder = node.type === NodeType.Folder;
-    const size = isFolder ? 4096 : node.activeRevision?.ok ? (node.activeRevision.value.claimedSize ?? 0) : 0;
+    const size = isFolder ? 4096 : (node.activeRevision?.claimedSize ?? 0);
     const mtime = node.modificationTime ?? new Date();
     const uid = process.getuid ? process.getuid() : 0;
     const gid = process.getgid ? process.getgid() : 0;
@@ -84,7 +84,7 @@ function placeholderNode(path: string, name: string): NodeEntity {
         directRole: MemberRole.Editor,
         ownedBy: {},
         isShared: false,
-        isSharedPublicly: false,
+        isSharedByUrl: false,
         creationTime: new Date(),
         modificationTime: new Date(),
         treeEventScopeId: '',
