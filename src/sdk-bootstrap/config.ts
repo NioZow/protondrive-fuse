@@ -3,15 +3,33 @@ import path from 'node:path';
 
 import { LogLevel } from '@protontech/drive-sdk/dist/telemetry';
 
-const APP_DIR_NAME = 'protondrive-nemo';
+const APP_DIR_NAME = 'proton-drive';
 
 export interface InitConfig {
     appVersion: string;
     sdkVersion?: string;
     clientUidPrefix: string;
     enablePersistedEvents?: boolean;
-    /** Account profile, isolating keychain entry, cache/app dirs, and default mount point. Defaults to `'default'`. */
+    /** Account profile, isolating the credentials file, cache/app dirs, and default mount point. Defaults to `'default'`. */
     profile?: string;
+    /**
+     * Console log level. Overrides `PROTONDRIVE_LOG_LEVEL`. Defaults to
+     * `LogLevel.WARNING` so the CLI stays quiet unless `-v/--verbose` is given.
+     */
+    logLevel?: LogLevel;
+    /**
+     * Remote folder paths whose files may be kept in the persistent local
+     * cache. Overrides `PROTONDRIVE_CACHE_PATHS` (comma-separated). Empty
+     * means every file is cacheable, which is the default.
+     */
+    cachePaths?: string[];
+    /**
+     * When true, decrypted file content is never kept on disk: every open is
+     * downloaded to a temporary location and removed again, and the whole
+     * content cache is wiped on start and on exit. Overrides
+     * `PROTONDRIVE_EPHEMERAL_CACHE`. Defaults to false.
+     */
+    ephemeralCache?: boolean;
 }
 
 export interface Config {
@@ -39,6 +57,32 @@ export interface Config {
     enablePersistedEvents: boolean;
     /** Level of logging to the console. */
     logLevel: LogLevel;
+
+    /**
+     * GPG key id/fingerprint (set `PROTONDRIVE_GPG_RECIPIENT`). The stored
+     * session is encrypted to this key and decrypted in memory through the
+     * user's gpg-agent. Required: there is no keychain or passphrase fallback.
+     */
+    gpgRecipient?: string;
+    /**
+     * Absolute path to the GPG-encrypted credentials file. Only ciphertext is
+     * written here; plaintext credentials never touch disk. Defaults to
+     * `<appDir>/auth-session.gpg` (override with `PROTONDRIVE_CREDENTIALS_FILE`).
+     */
+    credentialsFile: string;
+
+    /**
+     * Remote folder paths (POSIX-style, under "My Files") whose files may be
+     * kept in the persistent local cache. Empty = every file may be cached.
+     * Files outside these folders are still readable, but their decrypted copy
+     * is removed as soon as it is closed.
+     */
+    cachePaths: string[];
+    /**
+     * When true, no decrypted content is ever kept: every open uses a
+     * throwaway copy and the content cache is wiped on start and exit.
+     */
+    ephemeralCache: boolean;
 }
 
 /**
@@ -50,12 +94,22 @@ export function getConfig(options: InitConfig): Config {
     const profile = options.profile ?? 'default';
     validateProfileName(profile);
 
-    const logLevelOption = process.env.PROTONDRIVE_NEMO_LOG_LEVEL?.toUpperCase() ?? 'INFO';
-    const logLevel = LogLevel[logLevelOption as keyof typeof LogLevel] ?? LogLevel.INFO;
+    const envLogLevel = process.env.PROTONDRIVE_LOG_LEVEL?.toUpperCase();
+    const logLevel =
+        options.logLevel ??
+        (envLogLevel ? LogLevel[envLogLevel as keyof typeof LogLevel] : undefined) ??
+        LogLevel.WARNING;
 
     const { cacheDir, appDir } = defaultDataDirs(profile);
 
-    const baseUrl = process.env.PROTONDRIVE_NEMO_BASE_URL || 'drive-api.proton.me';
+    const baseUrl = process.env.PROTONDRIVE_BASE_URL || 'drive-api.proton.me';
+
+    const gpgRecipient = process.env.PROTONDRIVE_GPG_RECIPIENT || undefined;
+    const credentialsFile =
+        process.env.PROTONDRIVE_CREDENTIALS_FILE || path.join(appDir, 'auth-session.gpg');
+
+    const cachePaths = options.cachePaths ?? parsePathList(process.env.PROTONDRIVE_CACHE_PATHS);
+    const ephemeralCache = options.ephemeralCache ?? isTruthy(process.env.PROTONDRIVE_EPHEMERAL_CACHE);
 
     return {
         profile,
@@ -69,7 +123,26 @@ export function getConfig(options: InitConfig): Config {
         appDir,
         enablePersistedEvents: options.enablePersistedEvents ?? true,
         logLevel,
+        gpgRecipient,
+        credentialsFile,
+        cachePaths,
+        ephemeralCache,
     };
+}
+
+/** Parses `PROTONDRIVE_CACHE_PATHS`: a comma- or colon-separated list of Drive folder paths. */
+function parsePathList(raw: string | undefined): string[] {
+    if (!raw) {
+        return [];
+    }
+    return raw
+        .split(/[,:]/)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+}
+
+function isTruthy(raw: string | undefined): boolean {
+    return raw !== undefined && /^(1|true|yes|on)$/i.test(raw.trim());
 }
 
 /**
@@ -84,9 +157,9 @@ function accountUrlFromBaseUrl(baseUrl: string): string {
 }
 
 /**
- * `profile` gets interpolated straight into filesystem paths and a keychain
- * account name below, so this isn't cosmetic — an unvalidated value (e.g.
- * containing `..` or `/`) would be a path-traversal bug.
+ * `profile` gets interpolated straight into filesystem paths below, so this
+ * isn't cosmetic — an unvalidated value (e.g. containing `..` or `/`) would be
+ * a path-traversal bug.
  */
 function validateProfileName(profile: string): void {
     if (!/^[A-Za-z0-9_-]+$/.test(profile)) {
@@ -96,7 +169,7 @@ function validateProfileName(profile: string): void {
 
 function defaultDataDirs(profile: string): Pick<Config, 'cacheDir' | 'appDir'> {
     const home = homedir();
-    const override = process.env.PROTONDRIVE_NEMO_DATA_DIR;
+    const override = process.env.PROTONDRIVE_DATA_DIR;
     if (override) {
         const dir = profile === 'default' ? override : path.join(override, profile);
         return { cacheDir: dir, appDir: dir };

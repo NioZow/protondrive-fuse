@@ -39,12 +39,12 @@ Changes from upstream, all mechanical (no logic changes):
 
 - `cache/sqliteCache.ts`: `bun:sqlite``Database` → `better-sqlite3`.
 - `clientUid.ts`: `Bun.file`/`Bun.write` → `node:fs/promises`.
-- `credentials/secretCredentialsStore.ts`: `Bun.secrets` → `keytar`, and the
-  keychain service name was changed from `ch.proton.drive/drive-sdk-cli`
-  (the official CLI's) to `ch.proton.drive/protondrive-nemo` so this tool's
-  session doesn't collide with the official CLI's if both are installed.
-- Dropped `credentials/passCredentialsStore.ts` (pass(1) support) and the
-  CLI's own command/REPL/telemetry layers — out of scope for a FUSE daemon.
+- `credentials/`: upstream's keychain and pass(1) stores were dropped in
+  favour of a single file-based store (`gpgCredentialsStore.ts`): the session
+  is encrypted at rest with GnuPG to the recipient key named by
+  `PROTONDRIVE_GPG_RECIPIENT`, so no Secret Service/keychain is required.
+- Dropped the CLI's own command/REPL/telemetry layers — out of scope for a
+  FUSE daemon.
 
 This module is not a general-purpose library; it's this project's own
 adapted copy of Proton's reference wiring, kept in its own directory so the

@@ -4,7 +4,7 @@ import { Logger } from '@protontech/drive-sdk';
 
 import type { SessionCredentials, SessionInfo } from 'proton-drive-sdk-account';
 
-import type { CredentialsStore } from './interface';
+import type { Credentials as CredentialsSnapshot, CredentialsStore } from './interface';
 
 export class Credentials implements SessionCredentials {
     private cachePassword?: string;
@@ -44,6 +44,23 @@ export class Credentials implements SessionCredentials {
             await this.persistCredentials();
         }
         return this.cachePassword;
+    }
+
+    /**
+     * Serializes the currently held credentials, or `undefined` when not
+     * logged in. The snapshot is what gets encrypted at rest; exposed for
+     * diagnostics/tooling.
+     */
+    toSnapshot(): CredentialsSnapshot | undefined {
+        if (!this.userKeyPassword || !this.sessionInfo) {
+            return undefined;
+        }
+        return {
+            ...(this.cachePassword !== undefined && { cachePassword: this.cachePassword }),
+            userKeyPassword: this.userKeyPassword,
+            session: this.sessionInfo,
+            ...(this.telemetryEnabled !== undefined && { telemetryEnabled: this.telemetryEnabled }),
+        };
     }
 
     get uid(): string | undefined {

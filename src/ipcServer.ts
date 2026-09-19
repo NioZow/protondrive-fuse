@@ -3,39 +3,17 @@ import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import { NodeType } from '@protontech/drive-sdk';
-import type { Logger, NodeEntity } from '@protontech/drive-sdk';
+import type { Logger } from '@protontech/drive-sdk';
 
 import type { ContentStore } from './contentStore';
 import { DriveTree, NodeNotFoundError } from './driveTree';
 
-type Request = { op: 'evict'; path: string } | { op: 'cacheStatus'; path: string };
+type Request = { op: 'evict'; path: string } | { op: 'shutdown' };
 
 interface EvictResponse {
     ok: boolean;
     error?: string;
 }
-
-export type CacheState = 'cached' | 'not-cached' | 'partial' | 'unknown';
-
-interface CacheStatusResponse {
-    ok: boolean;
-    error?: string;
-    entries?: Record<string, CacheState>;
-}
-
-/**
- * Wall-clock budget for a single cacheStatus request, covering every
- * recursive folder-state walk it triggers. Descending into a subfolder can
- * mean a real network call (uncached listing), so bounding by node count
- * alone doesn't bound latency — a deep, never-before-listed tree can rack
- * up hundreds of serial API calls and multiple minutes of wall time (hit
- * this for real during development: 295 API calls, ~1 minute, before the
- * deadline was added). Once elapsed, remaining unresolved folders report
- * 'unknown' (no emblem) instead of descending further; already-cached
- * listings from prior requests stay fast since DriveTree caches them for
- * 10s, so repeat lookups of the same tree fill in over subsequent calls.
- */
-const CACHE_STATUS_DEADLINE_MS = 1200;
 
 /** Where the running mount daemon's IPC socket lives, given its cache dir. Shared by mount.ts (server) and cli.ts (client). */
 export function socketPathFor(cacheDir: string): string {
@@ -43,11 +21,11 @@ export function socketPathFor(cacheDir: string): string {
 }
 
 /**
- * Small Unix-socket control channel so a one-shot CLI invocation (bound to a
- * Nemo right-click action) can ask the long-running mount daemon to evict a
- * single file's local cache entry — without duplicating the daemon's SDK
- * session, auth, and DriveTree/ContentStore state in a throwaway process.
- * Newline-delimited JSON, one request/response per connection.
+ * Small Unix-socket control channel so a one-shot CLI invocation can ask the
+ * long-running mount daemon to evict a single file's local cache entry or to
+ * shut itself down — without duplicating the daemon's SDK session, auth, and
+ * DriveTree/ContentStore state in a throwaway process. Newline-delimited JSON,
+ * one request/response per connection.
  */
 export class IpcServer {
     private server?: Server;
@@ -58,6 +36,7 @@ export class IpcServer {
         private readonly content: ContentStore,
         private readonly hasUnsavedChanges: (path: string) => boolean,
         private readonly logger: Logger,
+        private readonly onShutdown?: () => Promise<void>,
     ) {}
 
     async start(): Promise<void> {
@@ -97,7 +76,7 @@ export class IpcServer {
             return;
         }
         this.handleRequest(line)
-            .catch((err): EvictResponse | CacheStatusResponse => ({
+            .catch((err): EvictResponse => ({
                 ok: false,
                 error: err instanceof NodeNotFoundError ? 'not-found' : err instanceof Error ? err.message : String(err),
             }))
@@ -106,13 +85,18 @@ export class IpcServer {
             });
     }
 
-    private async handleRequest(line: string): Promise<EvictResponse | CacheStatusResponse> {
+    private async handleRequest(line: string): Promise<EvictResponse> {
         const req = JSON.parse(line) as Request;
         if (req.op === 'evict') {
             return this.handleEvict(req.path);
         }
-        if (req.op === 'cacheStatus') {
-            return this.handleCacheStatus(req.path);
+        if (req.op === 'shutdown') {
+            // Ack first (the caller is waiting on this response), then tear
+            // down on the next tick so the reply reaches the socket.
+            setImmediate(() => {
+                this.onShutdown?.().catch((err) => this.logger.error(`Shutdown failed: ${err}`));
+            });
+            return { ok: true };
         }
         throw new Error(`Unknown op: ${(req as { op: string }).op}`);
     }
@@ -127,52 +111,5 @@ export class IpcServer {
         }
         await this.content.forget(node.uid);
         return { ok: true };
-    }
-
-    private async handleCacheStatus(reqPath: string): Promise<CacheStatusResponse> {
-        const folder = await this.tree.resolve(reqPath);
-        const children = await this.tree.listChildren(folder.uid);
-        const entries: Record<string, CacheState> = {};
-        const deadline = Date.now() + CACHE_STATUS_DEADLINE_MS;
-        for (const [name, node] of children) {
-            entries[name] = await this.cacheStateOf(node, deadline);
-        }
-        return { ok: true, entries };
-    }
-
-    private async cacheStateOf(node: NodeEntity, deadline: number): Promise<CacheState> {
-        if (node.type === NodeType.File) {
-            return (await this.content.isCached(node)) ? 'cached' : 'not-cached';
-        }
-        if (Date.now() > deadline) {
-            return 'unknown';
-        }
-
-        const children = [...(await this.tree.listChildren(node.uid)).values()];
-        if (children.length === 0) {
-            return 'cached';
-        }
-        let sawCached = false;
-        let sawNotCached = false;
-        for (const child of children) {
-            const state = await this.cacheStateOf(child, deadline);
-            if (state === 'unknown') {
-                return 'unknown';
-            }
-            if (state === 'partial') {
-                sawCached = true;
-                sawNotCached = true;
-                continue;
-            }
-            if (state === 'cached') {
-                sawCached = true;
-            } else {
-                sawNotCached = true;
-            }
-        }
-        if (sawCached && sawNotCached) {
-            return 'partial';
-        }
-        return sawCached ? 'cached' : 'not-cached';
     }
 }

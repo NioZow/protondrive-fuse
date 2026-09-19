@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { CryptoProxy } from '@protontech/crypto';
 import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
 import { Logger, OpenPGPCryptoWithCryptoProxy, ProtonDriveClient } from '@protontech/drive-sdk';
+import { ConsoleLogHandler, LogFilter, type MetricEvent, Telemetry } from '@protontech/drive-sdk/dist/telemetry';
 
 import { initApi } from './api';
 import { createCaches } from './cache';
@@ -27,8 +28,20 @@ export async function initDrive(configOptions: InitConfig) {
 
     const logger: Logger = new ConsoleLogger(config.logLevel);
 
+    // The SDK logs through its own Telemetry instance (its 'interface', 'api'
+    // and 'events' loggers), which is separate from the Logger passed around
+    // here. Left unset it defaults to INFO and ignores our level, so build one
+    // filtered at `config.logLevel`. Metric handlers are disabled: otherwise
+    // the default ConsoleMetricHandler prints every content-decryption metric
+    // regardless of level.
+    const telemetry = new Telemetry<MetricEvent>({
+        logFilter: new LogFilter({ globalLevel: config.logLevel }),
+        logHandlers: [new ConsoleLogHandler()],
+        metricHandlers: [],
+    });
+
     const openPGPCryptoModule = initOpenPGPCryptoModule();
-    const credentials = initCredentials(config.profile, logger);
+    const credentials = initCredentials(config, logger);
     const { auth, addresses, srp, apiClient, httpClient } = await initApi(config, credentials, logger, CryptoProxy);
 
     const clientUid = await getOrGenerateClientUid(config, logger);
@@ -45,6 +58,7 @@ export async function initDrive(configOptions: InitConfig) {
         account: addresses,
         openPGPCryptoModule,
         srpModule: srp,
+        telemetry,
         ...(eventsProvider ? { latestEventIdProvider: eventsProvider } : {}),
     });
 
