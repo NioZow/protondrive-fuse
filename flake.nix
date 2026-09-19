@@ -39,7 +39,7 @@
       );
 
       # Import into home-manager, then set:
-      #   services.proton-drive.enable = true;
+      #   programs.proton-drive.enable = true;
       homeManagerModules.default = import ./nix/module.nix;
 
       formatter = forAllSystems (_system: pkgs: pkgs.nixfmt-tree);

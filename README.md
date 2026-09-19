@@ -38,42 +38,40 @@ home-manager module.
 Run it without installing:
 
 ```bash
-nix run github:you/proton-drive -- login   # sign in (see below)
-nix run github:you/proton-drive -- mount   # mount ~/ProtonDrive
+nix run github:niozow/protondrive-fuse -- login   # sign in (see below)
+nix run github:niozow/protondrive-fuse -- mount   # mount ~/ProtonDrive
 ```
 
 Or install it into a profile:
 
 ```bash
-nix profile install github:you/proton-drive
+nix profile install github:niozow/protondrive-fuse
 ```
 
-### NixOS / home-manager module
+### home-manager module
 
-Import the module and enable the service; it runs the mount as a systemd user
-service and handles login at boot (restart on failure).
+The module installs a `proton-drive` wrapper with your defaults baked in as
+environment variables (an explicit value in your shell still wins). It does
+**not** install a service: a mount started at boot would race gpg-agent,
+which is usually still locked. Start the mount yourself with
+`proton-drive mount` (or `mount -d`).
 
 ```nix
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
-    proton-drive.url = "github:you/proton-drive";
+    proton-drive.url = "github:niozow/protondrive-fuse";
   };
 
   outputs = { nixpkgs, proton-drive, ... }@inputs: {
-    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
+    homeConfigurations.myuser = home-manager.lib.homeManagerConfiguration {
+      pkgs = nixpkgs.legacyPackages.x86_64-linux;
       modules = [
         proton-drive.homeManagerModules.default
         {
-          services.proton-drive = {
+          programs.proton-drive = {
             enable = true;
             gpgRecipient = "0xDEADBEEF";   # your GPG key id / fingerprint
-
-            # --- optional ---
-            mountPoint = "/home/user/ProtonDrive";
-            account = "default";           # a profile name, see "Multiple accounts"
-            autoStart = true;
 
             # Cache only some folders (off by default: everything is cached):
             cachePaths = [ "/Documents" "/Photos" ];
@@ -88,26 +86,27 @@ service and handles login at boot (restart on failure).
 }
 ```
 
-Run `proton-drive login` once with the same `gpgRecipient` set (and the same
-account profile) so the encrypted session file exists before the service
-starts:
+Then sign in once (the wrapper already sets `PROTONDRIVE_GPG_RECIPIENT`):
 
 ```bash
-PROTONDRIVE_GPG_RECIPIENT=0xDEADBEEF proton-drive login
+proton-drive login
+proton-drive mount        # foreground; or `proton-drive mount -d` to detach
 ```
 
 Module options:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enable` | bool | `false` | Enable the mount service. |
+| `enable` | bool | `false` | Install the CLI wrapper. |
 | `package` | package | built from this flake | Package providing the CLI. |
-| `gpgRecipient` | string | — | GPG key id/fingerprint the session is encrypted to (required). |
-| `mountPoint` | null or string | `null` | Local folder to mount at; `null` uses `~/ProtonDrive`. |
-| `account` | null or string | `null` | Account profile passed as `--account`. |
+| `gpgRecipient` | null or string | `null` | GPG key id/fingerprint (`PROTONDRIVE_GPG_RECIPIENT`). |
 | `cachePaths` | list of strings | `[]` | Only keep these Drive folders in the persistent cache; empty caches everything. |
 | `ephemeralCache` | bool | `false` | Never keep decrypted content on disk; wipes the cache on start and stop. |
-| `autoStart` | bool | `true` | Start the mount as a systemd user service at login. |
+| `credentialsFile` | null or string | `null` | Encrypted session path (`PROTONDRIVE_CREDENTIALS_FILE`). |
+| `dataDir` | null or string | `null` | Cache + app data directory (`PROTONDRIVE_DATA_DIR`). |
+| `baseUrl` | null or string | `null` | Drive API host (`PROTONDRIVE_BASE_URL`). |
+| `logLevel` | null or one of `DEBUG`/`INFO`/`WARNING`/`ERROR` | `null` | Console log level (`PROTONDRIVE_LOG_LEVEL`). |
+| `environment` | attrs of string | `{}` | Extra variables to bake into the wrapper. |
 
 ## Without Nix
 
@@ -143,7 +142,7 @@ proton-drive mount     # decrypts the session in memory via gpg-agent
 - If `PROTONDRIVE_GPG_RECIPIENT` is unset, commands fail with a clear error —
   there is no keychain or passphrase fallback.
 
-> Unattended mounts (systemd) need gpg-agent to decrypt without prompting:
+> Unattended/automated mounts need gpg-agent to decrypt without prompting:
 > either use a passphrase-less key, or cache the passphrase
 > (`gpg-preset-passphrase`). Otherwise run the mount where you can unlock the
 > agent.

@@ -59,8 +59,8 @@ buildNpmPackage {
 
   # `npm run build` (esbuild bundle) is the default npmBuildScript.
 
-  # The credentials store shells out to gpg; put it on PATH so `nix run` and
-  # the systemd unit don't depend on the caller's environment.
+  # The credentials store shells out to gpg; put it on PATH so `nix run`
+  # doesn't depend on the caller's environment.
   postInstall = ''
     wrapProgram $out/bin/proton-drive --prefix PATH : ${lib.makeBinPath [ gnupg ]}
   '';
